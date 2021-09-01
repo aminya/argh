@@ -421,7 +421,7 @@ pub trait FromArgs: Sized {
     /// Command to manage a classroom.
     ///
     /// Options:
-    ///   --help            display usage information
+    ///   -h, --help        display usage information
     ///
     /// Commands:
     ///   list              list all the classes.
@@ -445,7 +445,7 @@ pub trait FromArgs: Sized {
     ///
     /// Options:
     ///   --teacher-name    list classes for only this teacher.
-    ///   --help            display usage information
+    ///   -h, --help        display usage information
     /// "#.to_string(),
     ///        status: Ok(()),
     ///     },
@@ -587,7 +587,7 @@ pub trait FromArgs: Sized {
     /// Command to manage a classroom.
     ///
     /// Options:
-    ///   --help            display usage information
+    ///   -h, --help        display usage information
     ///
     /// Commands:
     ///   list              list all the classes.
