@@ -904,7 +904,7 @@ pub fn parse_struct_args(
 
     'parse_args: while let Some(&next_arg) = remaining_args.first() {
         remaining_args = &remaining_args[1..];
-        if (next_arg == "--help" || next_arg == "help") && !options_ended {
+        if (next_arg == "--help" || next_arg == "help" || next_arg == "-h") && !options_ended {
             help = true;
             continue;
         }
