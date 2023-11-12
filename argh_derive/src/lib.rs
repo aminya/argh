@@ -427,18 +427,22 @@ fn impl_from_args_struct_from_args<'a>(
     method_impl
 }
 
-/// get help triggers vector from type_attrs.help_triggers as a Vec<String>
+/// get help triggers vector from type_attrs.help_triggers as a [`Vec<String>`]
 ///
 /// Defaults to vec!["--help", "help"] if type_attrs.help_triggers is None
 fn get_help_triggers(type_attrs: &TypeAttrs) -> Vec<String> {
     let help_triggers = type_attrs.help_triggers.as_ref().map_or_else(
         || vec!["--help".to_owned(), "help".to_owned()],
         |s| {
-            s.into_iter()
+            s.iter()
                 .filter_map(|s| {
                     let trigger = s.value();
                     let trigger_trimmed = trigger.trim().to_owned();
-                    return if trigger_trimmed.is_empty() { None } else { Some(trigger_trimmed) };
+                    if trigger_trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trigger_trimmed)
+                    }
                 })
                 .collect::<Vec<_>>()
         },
