@@ -26,6 +26,7 @@ pub(crate) fn help(
     ty_attrs: &TypeAttrs,
     fields: &[StructField<'_>],
     subcommand: Option<&StructField<'_>>,
+    help_triggers: &[String],
 ) -> TokenStream {
     #![allow(clippy::format_push_string)]
     let mut format_lit = "Usage: {command_name}".to_string();
@@ -84,8 +85,12 @@ pub(crate) fn help(
     for option in options {
         option_description(errors, &mut format_lit, option);
     }
-    // Also include "help"
-    option_description_format(&mut format_lit, None, "-h, --help", "display usage information");
+    option_description_format(
+        &mut format_lit,
+        None,
+        &help_triggers.join(", "),
+        "display usage information",
+    );
 
     let subcommand_calculation;
     let subcommand_format_arg;

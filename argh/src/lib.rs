@@ -45,7 +45,7 @@
 //!   -j, --jump        whether or not to jump
 //!   --height          how high to go
 //!   --pilot-nickname  an optional nickname for the pilot
-//!   --help            display usage information
+//!   --help, help      display usage information
 //! ```
 //!
 //! The resulting program can then be used in any of these ways:
@@ -70,6 +70,7 @@
 //!
 //! #[derive(FromArgs)]
 //! /// Reach new heights.
+//! #[argh(help_triggers("-h", "--help", "help"))]
 //! struct GoUp {
 //!     /// an optional nickname for the pilot
 //!     #[argh(option)]
@@ -402,7 +403,7 @@ pub trait FromArgs: Sized {
     /// Command to manage a classroom.
     ///
     /// Options:
-    ///   -h, --help        display usage information
+    ///   --help, help      display usage information
     ///
     /// Commands:
     ///   list              list all the classes.
@@ -426,7 +427,7 @@ pub trait FromArgs: Sized {
     ///
     /// Options:
     ///   --teacher-name    list classes for only this teacher.
-    ///   -h, --help        display usage information
+    ///   --help, help      display usage information
     /// "#.to_string(),
     ///        status: Ok(()),
     ///     },
@@ -568,7 +569,7 @@ pub trait FromArgs: Sized {
     /// Command to manage a classroom.
     ///
     /// Options:
-    ///   -h, --help        display usage information
+    ///   --help, help      display usage information
     ///
     /// Commands:
     ///   list              list all the classes.
@@ -863,7 +864,7 @@ pub fn parse_struct_args(
 
     'parse_args: while let Some(&next_arg) = remaining_args.first() {
         remaining_args = &remaining_args[1..];
-        if (next_arg == "--help" || next_arg == "help" || next_arg == "-h") && !options_ended {
+        if (parse_options.help_triggers.contains(&next_arg)) && !options_ended {
             help = true;
             continue;
         }
@@ -910,6 +911,9 @@ pub struct ParseStructOptions<'a> {
 
     /// The storage for argument output data.
     pub slots: &'a mut [ParseStructOption<'a>],
+
+    /// help triggers is a list of strings that trigger printing of help
+    pub help_triggers: &'a [&'a str],
 }
 
 impl<'a> ParseStructOptions<'a> {

@@ -82,6 +82,29 @@ fn custom_from_str_example() {
 }
 
 #[test]
+fn help_trigger_example() {
+    /// Height options
+    #[derive(FromArgs)]
+    #[argh(help_triggers("-h", "--help", "help"))]
+    struct Height {
+        /// how high to go
+        #[argh(option)]
+        _height: usize,
+    }
+
+    assert_help_string::<Height>(
+        r#"Usage: test_arg_0 --height <height>
+
+Height options
+
+Options:
+  --height          how high to go
+  -h, --help, help  display usage information
+"#,
+    );
+}
+
+#[test]
 fn subcommand_example() {
     #[derive(FromArgs, PartialEq, Debug)]
     /// Top-level command.
@@ -256,7 +279,7 @@ Short description
 Options:
   --s               a switch with a description that is spread across a number
                     of lines of comments.
-  -h, --help        display usage information
+  --help, help      display usage information
 "###,
     );
 }
@@ -393,7 +416,7 @@ Woot
 
 Options:
   -n, --n           fooey
-  -h, --help        display usage information
+  --help, help      display usage information
 "###,
         );
     }
@@ -415,7 +438,7 @@ Woot
 
 Options:
   --option-name     fooey
-  -h, --help        display usage information
+  --help, help      display usage information
 "###,
         );
     }
@@ -453,7 +476,7 @@ Positional Arguments:
   b                 fooey
 
 Options:
-  -h, --help        display usage information
+  --help, help      display usage information
 "###,
         );
     }
@@ -537,7 +560,7 @@ Positional Arguments:
 Options:
   --b               woo
   --c               stuff
-  -h, --help        display usage information
+  --help, help      display usage information
 "###,
         );
     }
@@ -926,7 +949,7 @@ mod fuchsia_commandline_tools_rubric {
 A type for testing `--help`/`help`
 
 Options:
-  -h, --help        display usage information
+  --help, help      display usage information
 
 Commands:
   first             First subcommmand for testing `help`.
@@ -937,7 +960,7 @@ Commands:
 First subcommmand for testing `help`.
 
 Options:
-  -h, --help        display usage information
+  --help, help      display usage information
 
 Commands:
   second            Second subcommand for testing `help`.
@@ -948,7 +971,7 @@ Commands:
 Second subcommand for testing `help`.
 
 Options:
-  -h, --help        display usage information
+  --help, help      display usage information
 "###;
 
     #[test]
@@ -1129,7 +1152,7 @@ Options:
                     documentation
   -s, --scribble    write <scribble> repeatedly
   -v, --verbose     say more. Defaults to $BLAST_VERBOSE.
-  -h, --help        display usage information
+  --help, help      display usage information
 
 Commands:
   blow-up           explosively separate
@@ -1169,7 +1192,7 @@ Positional Arguments:
   name
 
 Options:
-  -h, --help        display usage information
+  --help, help      display usage information
 "###,
         );
     }
@@ -1199,7 +1222,7 @@ Positional Arguments:
   _two              this one is real
 
 Options:
-  -h, --help        display usage information
+  --help, help      display usage information
 "###,
         );
     }
@@ -1562,7 +1585,7 @@ Woot
 
 Options:
   -n, --n           fooey
-  -h, --help        display usage information
+  --help, help      display usage information
 "###
             .to_owned(),
             status: Ok(()),
