@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+use syn::{parse::Parser, punctuated::Punctuated};
+
 use {
     crate::errors::Errors,
     proc_macro2::Span,
@@ -320,7 +322,7 @@ impl TypeAttrs {
                         this.parse_attr_subcommand(errors, ident);
                     }
                 } else if name.is_ident("help_triggers") {
-                    if let Some(m) = errors.expect_meta_list(meta) {
+                    if let Some(m) = errors.expect_meta_list(&meta) {
                         Self::parse_help_triggers(m, errors, &mut this);
                     }
                 } else {
@@ -412,14 +414,21 @@ impl TypeAttrs {
         }
     }
 
-    // get the list of arguments that trigger printing of the help message as a vector of strings (help_arguments = ["-h", "--help", "help"])
+    // get the list of arguments that trigger printing of the help message as a vector of strings (help_arguments("-h", "--help", "help"))
     fn parse_help_triggers(m: &syn::MetaList, errors: &Errors, this: &mut TypeAttrs) {
-        for nested in &m.nested {
-            if let Some(lit_str) =
-                errors.expect_nested_lit(nested).and_then(|l| errors.expect_lit_str(l))
-            {
-                this.help_triggers.get_or_insert_with(Vec::new).push(lit_str.clone());
+        let parser = Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+        match parser.parse(m.tokens.clone().into()) {
+            Ok(args) => {
+                let mut triggers = Vec::new();
+                for arg in args {
+                    if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(lit_str), .. }) = arg {
+                        triggers.push(lit_str);
+                    }
+                }
+
+                this.help_triggers = Some(triggers);
             }
+            Err(err) => errors.push(err),
         }
     }
 }

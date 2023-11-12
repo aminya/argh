@@ -345,7 +345,7 @@ A \description: !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~\
 
 Options:
   --s               a \description: !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~\
-  --help            display usage information
+  --help, help      display usage information
 "###,
     );
 }
