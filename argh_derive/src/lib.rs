@@ -11,15 +11,15 @@ extern crate proc_macro;
 use {
     crate::{
         errors::Errors,
-        parse_attrs::{FieldAttrs, FieldKind, TypeAttrs},
+        parse_attrs::{check_long_name, FieldAttrs, FieldKind, TypeAttrs},
     },
-    heck::ToKebabCase,
     proc_macro2::{Span, TokenStream},
     quote::{quote, quote_spanned, ToTokens},
     std::{collections::HashMap, str::FromStr},
-    syn::{spanned::Spanned, LitStr},
+    syn::{spanned::Spanned, GenericArgument, LitStr, PathArguments, Type},
 };
 
+mod args_info;
 mod errors;
 mod help;
 mod parse_attrs;
@@ -29,6 +29,14 @@ mod parse_attrs;
 pub fn argh_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let ast = syn::parse_macro_input!(input as syn::DeriveInput);
     let gen = impl_from_args(&ast);
+    gen.into()
+}
+
+/// Entrypoint for `#[derive(ArgsInfo)]`.
+#[proc_macro_derive(ArgsInfo, attributes(argh))]
+pub fn args_info_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let ast = syn::parse_macro_input!(input as syn::DeriveInput);
+    let gen = args_info::impl_args_info(&ast);
     gen.into()
 }
 
@@ -59,6 +67,7 @@ enum Optionality {
     Defaulted(TokenStream),
     Optional,
     Repeating,
+    DefaultedRepeating(TokenStream),
 }
 
 impl PartialEq<Optionality> for Optionality {
@@ -151,8 +160,14 @@ impl<'a> StructField<'a> {
                             tree
                         })
                         .collect();
-                    optionality = Optionality::Defaulted(tokens);
-                    ty_without_wrapper = &field.ty;
+                    let inner = if let Some(x) = ty_inner(&["Vec"], &field.ty) {
+                        optionality = Optionality::DefaultedRepeating(tokens);
+                        x
+                    } else {
+                        optionality = Optionality::Defaulted(tokens);
+                        &field.ty
+                    };
+                    ty_without_wrapper = inner;
                 } else {
                     let mut inner = None;
                     optionality = if let Some(x) = ty_inner(&["Option"], &field.ty) {
@@ -179,11 +194,11 @@ impl<'a> StructField<'a> {
         // Defaults to the kebab-case'd field name if `#[argh(long = "...")]` is omitted.
         let long_name = match kind {
             FieldKind::Switch | FieldKind::Option => {
-                let long_name = attrs
-                    .long
-                    .as_ref()
-                    .map(syn::LitStr::value)
-                    .unwrap_or_else(|| name.to_string().to_kebab_case());
+                let long_name = attrs.long.as_ref().map(syn::LitStr::value).unwrap_or_else(|| {
+                    let kebab_name = to_kebab_case(&name.to_string());
+                    check_long_name(errors, name, &kebab_name);
+                    kebab_name
+                });
                 if long_name == "help" {
                     errors.err(field, "Custom `--help` flags are not supported.");
                 }
@@ -196,9 +211,41 @@ impl<'a> StructField<'a> {
         Some(StructField { field, attrs, kind, optionality, ty_without_wrapper, name, long_name })
     }
 
-    pub(crate) fn arg_name(&self) -> String {
-        self.attrs.arg_name.as_ref().map(LitStr::value).unwrap_or_else(|| self.name.to_string())
+    pub(crate) fn positional_arg_name(&self) -> String {
+        self.attrs
+            .arg_name
+            .as_ref()
+            .map(LitStr::value)
+            .unwrap_or_else(|| self.name.to_string().trim_matches('_').to_owned())
     }
+}
+
+fn to_kebab_case(s: &str) -> String {
+    let words = s.split('_').filter(|word| !word.is_empty());
+    let mut res = String::with_capacity(s.len());
+    for word in words {
+        if !res.is_empty() {
+            res.push('-')
+        }
+        res.push_str(word)
+    }
+    res
+}
+
+#[test]
+fn test_kebabs() {
+    #[track_caller]
+    fn check(s: &str, want: &str) {
+        let got = to_kebab_case(s);
+        assert_eq!(got.as_str(), want)
+    }
+    check("", "");
+    check("_", "");
+    check("foo", "foo");
+    check("__foo_", "foo");
+    check("foo_bar", "foo-bar");
+    check("foo__Bar", "foo-Bar");
+    check("foo_bar__baz_", "foo-bar-baz");
 }
 
 /// Implements `FromArgs` and `TopLevelCommand` or `SubCommand` for a `#[derive(FromArgs)]` struct.
@@ -325,16 +372,13 @@ fn impl_from_args_struct_from_args<'a>(
 
     let help_triggers = get_help_triggers(type_attrs);
 
-    // Identifier referring to a value containing the name of the current command as an `&[&str]`.
-    let cmd_name_str_array_ident = syn::Ident::new("__cmd_name", impl_span);
-    let help = help::help(
-        errors,
-        cmd_name_str_array_ident,
-        type_attrs,
-        fields,
-        subcommand,
-        &help_triggers,
-    );
+    let help = if cfg!(feature = "help") {
+        // Identifier referring to a value containing the name of the current command as an `&[&str]`.
+        let cmd_name_str_array_ident = syn::Ident::new("__cmd_name", impl_span);
+        help::help(errors, cmd_name_str_array_ident, type_attrs, fields, subcommand, &help_triggers)
+    } else {
+        quote! { String::new() }
+    };
 
     let method_impl = quote_spanned! { impl_span =>
         fn from_args(__cmd_name: &[&str], __args: &[&str])
@@ -472,19 +516,15 @@ fn impl_from_args_struct_redact_arg_values<'a>(
         quote! { "no subcommand name" }
     };
 
-    // Identifier referring to a value containing the name of the current command as an `&[&str]`.
-    let cmd_name_str_array_ident = syn::Ident::new("__cmd_name", impl_span);
-
     let help_triggers = get_help_triggers(type_attrs);
 
-    let help = help::help(
-        errors,
-        cmd_name_str_array_ident,
-        type_attrs,
-        fields,
-        subcommand,
-        &help_triggers,
-    );
+    let help = if cfg!(feature = "help") {
+        // Identifier referring to a value containing the name of the current command as an `&[&str]`.
+        let cmd_name_str_array_ident = syn::Ident::new("__cmd_name", impl_span);
+        help::help(errors, cmd_name_str_array_ident, type_attrs, fields, subcommand, &help_triggers)
+    } else {
+        quote! { String::new() }
+    };
 
     let method_impl = quote_spanned! { impl_span =>
         fn redact_arg_values(__cmd_name: &[&str], __args: &[&str]) -> std::result::Result<Vec<String>, argh::EarlyExit> {
@@ -570,7 +610,7 @@ fn ensure_unique_names(errors: &Errors, fields: &[StructField<'_>]) {
                     first_use_field,
                     &format!("The short name of \"-{}\" was already used here.", short_name),
                 );
-                errors.err_span_tokens(&field.field, "Later usage here.");
+                errors.err_span_tokens(field.field, "Later usage here.");
             }
 
             seen_short_names.insert(short_name, &field.field);
@@ -582,7 +622,7 @@ fn ensure_unique_names(errors: &Errors, fields: &[StructField<'_>]) {
                     *first_use_field,
                     &format!("The long name of \"{}\" was already used here.", long_name),
                 );
-                errors.err_span_tokens(&field.field, "Later usage here.");
+                errors.err_span_tokens(field.field, "Later usage here.");
             }
 
             seen_long_names.insert(long_name, field.field);
@@ -597,8 +637,11 @@ fn top_or_sub_cmd_impl(
     type_attrs: &TypeAttrs,
     generic_args: &syn::Generics,
 ) -> TokenStream {
-    let description =
-        help::require_description(errors, name.span(), &type_attrs.description, "type");
+    let description = if cfg!(feature = "help") {
+        help::require_description(errors, name.span(), &type_attrs.description, "type")
+    } else {
+        String::new()
+    };
     let (impl_generics, ty_generics, where_clause) = generic_args.split_for_impl();
     if type_attrs.is_subcommand.is_none() {
         // Not a subcommand
@@ -641,6 +684,9 @@ fn declare_local_storage_for_from_args_fields<'a>(
             Optionality::Optional | Optionality::Repeating => (&field.field.ty).into_token_stream(),
             Optionality::None | Optionality::Defaulted(_) => {
                 quote! { std::option::Option<#field_type> }
+            }
+            Optionality::DefaultedRepeating(_) => {
+                quote! { std::option::Option<std::vec::Vec<#field_type>> }
             }
         };
 
@@ -687,7 +733,7 @@ fn unwrap_from_args_fields<'a>(
                 Optionality::Optional | Optionality::Repeating => {
                     quote! { #field_name: #field_name.slot }
                 }
-                Optionality::Defaulted(tokens) => {
+                Optionality::Defaulted(tokens) | Optionality::DefaultedRepeating(tokens) => {
                     quote! {
                         #field_name: #field_name.slot.unwrap_or_else(|| #tokens)
                     }
@@ -697,7 +743,7 @@ fn unwrap_from_args_fields<'a>(
             FieldKind::SubCommand => match field.optionality {
                 Optionality::None => quote! { #field_name: #field_name.unwrap() },
                 Optionality::Optional | Optionality::Repeating => field_name.into_token_stream(),
-                Optionality::Defaulted(_) => unreachable!(),
+                Optionality::Defaulted(_) | Optionality::DefaultedRepeating(_) => unreachable!(),
             },
         }
     })
@@ -727,6 +773,9 @@ fn declare_local_storage_for_redacted_fields<'a>(
                     Optionality::Repeating => {
                         quote! { std::vec::Vec<String> }
                     }
+                    Optionality::DefaultedRepeating(_) => {
+                        quote! { std::option::Option<std::vec::Vec<String>> }
+                    }
                     Optionality::None | Optionality::Optional | Optionality::Defaulted(_) => {
                         quote! { std::option::Option<String> }
                     }
@@ -745,12 +794,15 @@ fn declare_local_storage_for_redacted_fields<'a>(
                     Optionality::Repeating => {
                         quote! { std::vec::Vec<String> }
                     }
+                    Optionality::DefaultedRepeating(_) => {
+                        quote! { std::option::Option<std::vec::Vec<String>> }
+                    }
                     Optionality::None | Optionality::Optional | Optionality::Defaulted(_) => {
                         quote! { std::option::Option<String> }
                     }
                 };
 
-                let arg_name = field.arg_name();
+                let arg_name = field.positional_arg_name();
                 quote! {
                     let mut #field_name: argh::ParseValueSlotTy::<#field_slot_type, String> =
                         argh::ParseValueSlotTy {
@@ -785,6 +837,13 @@ fn unwrap_redacted_fields<'a>(
                 Optionality::Repeating => {
                     quote! {
                         __redacted.extend(#field_name.slot.into_iter());
+                    }
+                }
+                Optionality::DefaultedRepeating(_) => {
+                    quote! {
+                        if let Some(__field_name) = #field_name.slot {
+                            __redacted.extend(__field_name.into_iter());
+                        }
                     }
                 }
                 Optionality::None | Optionality::Optional | Optionality::Defaulted(_) => {
@@ -842,7 +901,7 @@ fn append_missing_requirements<'a>(
         match field.kind {
             FieldKind::Switch => unreachable!("switches are always optional"),
             FieldKind::Positional => {
-                let name = field.arg_name();
+                let name = field.positional_arg_name();
                 quote! {
                     if #field_name.slot.is_none() {
                         #mri.missing_positional_arg(#name)
@@ -890,6 +949,16 @@ fn ty_expect_switch(errors: &Errors, ty: &syn::Type) -> bool {
                 return false;
             }
             let ident = &path.path.segments[0].ident;
+            // `Option<bool>` can be used as a `switch`.
+            if ident == "Option" {
+                if let PathArguments::AngleBracketed(args) = &path.path.segments[0].arguments {
+                    if let GenericArgument::Type(Type::Path(p)) = &args.args[0] {
+                        if p.path.segments[0].ident == "bool" {
+                            return true;
+                        }
+                    }
+                }
+            }
             ["bool", "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128"]
                 .iter()
                 .any(|path| ident == path)
@@ -900,7 +969,7 @@ fn ty_expect_switch(errors: &Errors, ty: &syn::Type) -> bool {
 
     let res = ty_can_be_switch(ty);
     if !res {
-        errors.err(ty, "switches must be of type `bool` or integer type");
+        errors.err(ty, "switches must be of type `bool`, `Option<bool>`, or integer type");
     }
     res
 }

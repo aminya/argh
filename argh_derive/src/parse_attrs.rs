@@ -13,7 +13,7 @@ use {
 pub struct FieldAttrs {
     pub default: Option<syn::LitStr>,
     pub description: Option<Description>,
-    pub from_str_fn: Option<syn::Ident>,
+    pub from_str_fn: Option<syn::ExprPath>,
     pub field_type: Option<FieldType>,
     pub long: Option<syn::LitStr>,
     pub short: Option<syn::LitChar>,
@@ -76,49 +76,47 @@ impl FieldAttrs {
                 continue;
             };
 
-            for meta in &ml.nested {
-                let meta = if let Some(m) = errors.expect_nested_meta(meta) { m } else { continue };
-
+            for meta in ml {
                 let name = meta.path();
                 if name.is_ident("arg_name") {
-                    if let Some(m) = errors.expect_meta_name_value(meta) {
+                    if let Some(m) = errors.expect_meta_name_value(&meta) {
                         this.parse_attr_arg_name(errors, m);
                     }
                 } else if name.is_ident("default") {
-                    if let Some(m) = errors.expect_meta_name_value(meta) {
+                    if let Some(m) = errors.expect_meta_name_value(&meta) {
                         this.parse_attr_default(errors, m);
                     }
                 } else if name.is_ident("description") {
-                    if let Some(m) = errors.expect_meta_name_value(meta) {
+                    if let Some(m) = errors.expect_meta_name_value(&meta) {
                         parse_attr_description(errors, m, &mut this.description);
                     }
                 } else if name.is_ident("from_str_fn") {
-                    if let Some(m) = errors.expect_meta_list(meta) {
+                    if let Some(m) = errors.expect_meta_list(&meta) {
                         this.parse_attr_from_str_fn(errors, m);
                     }
                 } else if name.is_ident("long") {
-                    if let Some(m) = errors.expect_meta_name_value(meta) {
+                    if let Some(m) = errors.expect_meta_name_value(&meta) {
                         this.parse_attr_long(errors, m);
                     }
                 } else if name.is_ident("option") {
-                    parse_attr_field_type(errors, meta, FieldKind::Option, &mut this.field_type);
+                    parse_attr_field_type(errors, &meta, FieldKind::Option, &mut this.field_type);
                 } else if name.is_ident("short") {
-                    if let Some(m) = errors.expect_meta_name_value(meta) {
+                    if let Some(m) = errors.expect_meta_name_value(&meta) {
                         this.parse_attr_short(errors, m);
                     }
                 } else if name.is_ident("subcommand") {
                     parse_attr_field_type(
                         errors,
-                        meta,
+                        &meta,
                         FieldKind::SubCommand,
                         &mut this.field_type,
                     );
                 } else if name.is_ident("switch") {
-                    parse_attr_field_type(errors, meta, FieldKind::Switch, &mut this.field_type);
+                    parse_attr_field_type(errors, &meta, FieldKind::Switch, &mut this.field_type);
                 } else if name.is_ident("positional") {
                     parse_attr_field_type(
                         errors,
-                        meta,
+                        &meta,
                         FieldKind::Positional,
                         &mut this.field_type,
                     );
@@ -183,18 +181,13 @@ impl FieldAttrs {
         parse_attr_single_string(errors, m, "long", &mut self.long);
         let long = self.long.as_ref().unwrap();
         let value = long.value();
-        if !value.is_ascii() {
-            errors.err(long, "Long names must be ASCII");
-        }
-        if !value.chars().all(|c| c.is_lowercase() || c == '-' || c.is_ascii_digit()) {
-            errors.err(long, "Long names must be lowercase");
-        }
+        check_long_name(errors, long, &value);
     }
 
     fn parse_attr_short(&mut self, errors: &Errors, m: &syn::MetaNameValue) {
         if let Some(first) = &self.short {
             errors.duplicate_attrs("short", first, m);
-        } else if let Some(lit_char) = errors.expect_lit_char(&m.lit) {
+        } else if let Some(lit_char) = errors.expect_lit_char(&m.value) {
             self.short = Some(lit_char.clone());
             if !lit_char.value().is_ascii() {
                 errors.err(lit_char, "Short names must be ASCII");
@@ -203,26 +196,26 @@ impl FieldAttrs {
     }
 }
 
+pub(crate) fn check_long_name(errors: &Errors, spanned: &impl syn::spanned::Spanned, value: &str) {
+    if !value.is_ascii() {
+        errors.err(spanned, "Long names must be ASCII");
+    }
+    if !value.chars().all(|c| c.is_lowercase() || c == '-' || c.is_ascii_digit()) {
+        errors.err(spanned, "Long names may only contain lowercase letters, digits, and dashes");
+    }
+}
+
 fn parse_attr_fn_name(
     errors: &Errors,
     m: &syn::MetaList,
     attr_name: &str,
-    slot: &mut Option<syn::Ident>,
+    slot: &mut Option<syn::ExprPath>,
 ) {
     if let Some(first) = slot {
         errors.duplicate_attrs(attr_name, first, m);
     }
 
-    if m.nested.len() != 1 {
-        errors.err(&m.nested, "Expected a single argument containing the function name");
-        return;
-    }
-
-    // `unwrap` will not fail because of the call above
-    let nested = m.nested.first().unwrap();
-    if let Some(path) = errors.expect_nested_meta(nested).and_then(|m| errors.expect_meta_word(m)) {
-        *slot = path.get_ident().cloned();
-    }
+    *slot = errors.ok(m.parse_args());
 }
 
 fn parse_attr_field_type(
@@ -242,7 +235,7 @@ fn parse_attr_field_type(
 
 // Whether the attribute is one like `#[<name> ...]`
 fn is_matching_attr(name: &str, attr: &syn::Attribute) -> bool {
-    attr.path.segments.len() == 1 && attr.path.segments[0].ident == name
+    attr.path().segments.len() == 1 && attr.path().segments[0].ident == name
 }
 
 /// Checks for `#[doc ...]`, which is generated by doc comments.
@@ -255,34 +248,18 @@ fn is_argh_attr(attr: &syn::Attribute) -> bool {
     is_matching_attr("argh", attr)
 }
 
-fn attr_to_meta_subtype<R: Clone>(
+/// Filters out non-`#[argh(...)]` attributes and converts to a sequence of `syn::Meta`.
+fn argh_attr_to_meta_list(
     errors: &Errors,
     attr: &syn::Attribute,
-    f: impl FnOnce(&syn::Meta) -> Option<&R>,
-) -> Option<R> {
-    match attr.parse_meta() {
-        Ok(meta) => f(&meta).cloned(),
-        Err(e) => {
-            errors.push(e);
-            None
-        }
-    }
-}
-
-fn attr_to_meta_list(errors: &Errors, attr: &syn::Attribute) -> Option<syn::MetaList> {
-    attr_to_meta_subtype(errors, attr, |m| errors.expect_meta_list(m))
-}
-
-fn attr_to_meta_name_value(errors: &Errors, attr: &syn::Attribute) -> Option<syn::MetaNameValue> {
-    attr_to_meta_subtype(errors, attr, |m| errors.expect_meta_name_value(m))
-}
-
-/// Filters out non-`#[argh(...)]` attributes and converts to `syn::MetaList`.
-fn argh_attr_to_meta_list(errors: &Errors, attr: &syn::Attribute) -> Option<syn::MetaList> {
+) -> Option<impl IntoIterator<Item = syn::Meta>> {
     if !is_argh_attr(attr) {
         return None;
     }
-    attr_to_meta_list(errors, attr)
+    let ml = errors.expect_meta_list(&attr.meta)?;
+    errors.ok(ml.parse_args_with(
+        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+    ))
 }
 
 /// Represents a `#[derive(FromArgs)]` type's top-level attributes.
@@ -315,32 +292,31 @@ impl TypeAttrs {
                 continue;
             };
 
-            for meta in &ml.nested {
-                let meta = if let Some(m) = errors.expect_nested_meta(meta) { m } else { continue };
-
+            for meta in ml {
                 let name = meta.path();
                 if name.is_ident("description") {
-                    if let Some(m) = errors.expect_meta_name_value(meta) {
+                    if let Some(m) = errors.expect_meta_name_value(&meta) {
                         parse_attr_description(errors, m, &mut this.description);
                     }
                 } else if name.is_ident("error_code") {
-                    if let Some(m) = errors.expect_meta_list(meta) {
+                    if let Some(m) = errors.expect_meta_list(&meta) {
                         this.parse_attr_error_code(errors, m);
                     }
                 } else if name.is_ident("example") {
-                    if let Some(m) = errors.expect_meta_name_value(meta) {
+                    if let Some(m) = errors.expect_meta_name_value(&meta) {
                         this.parse_attr_example(errors, m);
                     }
                 } else if name.is_ident("name") {
-                    if let Some(m) = errors.expect_meta_name_value(meta) {
+                    if let Some(m) = errors.expect_meta_name_value(&meta) {
                         this.parse_attr_name(errors, m);
                     }
                 } else if name.is_ident("note") {
-                    if let Some(m) = errors.expect_meta_name_value(meta) {
+                    if let Some(m) = errors.expect_meta_name_value(&meta) {
                         this.parse_attr_note(errors, m);
                     }
                 } else if name.is_ident("subcommand") {
-                    if let Some(ident) = errors.expect_meta_word(meta).and_then(|p| p.get_ident()) {
+                    if let Some(ident) = errors.expect_meta_word(&meta).and_then(|p| p.get_ident())
+                    {
                         this.parse_attr_subcommand(errors, ident);
                     }
                 } else if name.is_ident("help_triggers") {
@@ -398,20 +374,17 @@ impl TypeAttrs {
     }
 
     fn parse_attr_error_code(&mut self, errors: &Errors, ml: &syn::MetaList) {
-        if ml.nested.len() != 2 {
-            errors.err(&ml, "Expected two arguments, an error number and a string description");
-            return;
-        }
-
-        let err_code = &ml.nested[0];
-        let err_msg = &ml.nested[1];
-
-        let err_code = errors.expect_nested_lit(err_code).and_then(|l| errors.expect_lit_int(l));
-        let err_msg = errors.expect_nested_lit(err_msg).and_then(|l| errors.expect_lit_str(l));
-
-        if let (Some(err_code), Some(err_msg)) = (err_code, err_msg) {
-            self.error_codes.push((err_code.clone(), err_msg.clone()));
-        }
+        errors.ok(ml.parse_args_with(|input: syn::parse::ParseStream| {
+            let err_code = input.parse()?;
+            input.parse::<syn::Token![,]>()?;
+            let err_msg = input.parse()?;
+            if let (Some(err_code), Some(err_msg)) =
+                (errors.expect_lit_int(&err_code), errors.expect_lit_str(&err_msg))
+            {
+                self.error_codes.push((err_code.clone(), err_msg.clone()));
+            }
+            Ok(())
+        }));
     }
 
     fn parse_attr_example(&mut self, errors: &Errors, m: &syn::MetaNameValue) {
@@ -483,15 +456,13 @@ impl VariantAttrs {
                 continue;
             };
 
-            for meta in &ml.nested {
-                let meta = if let Some(m) = errors.expect_nested_meta(meta) { m } else { continue };
-
+            for meta in ml {
                 let name = meta.path();
                 if name.is_ident("dynamic") {
                     if let Some(prev) = this.is_dynamic.as_ref() {
-                        errors.duplicate_attrs("dynamic", prev, meta);
+                        errors.duplicate_attrs("dynamic", prev, &meta);
                     } else {
-                        this.is_dynamic = errors.expect_meta_word(meta).cloned();
+                        this.is_dynamic = errors.expect_meta_word(&meta).cloned();
                     }
                 } else {
                     errors.err(
@@ -513,11 +484,52 @@ fn check_option_description(errors: &Errors, desc: &str, span: Span) {
         (Some(x), _) if x.is_lowercase() => {}
         // If both the first and second letter are not lowercase,
         // this is likely an initialism which should be allowed.
-        (Some(x), Some(y)) if !x.is_lowercase() && !y.is_lowercase() => {}
+        (Some(x), Some(y)) if !x.is_lowercase() && (y.is_alphanumeric() && !y.is_lowercase()) => {}
         _ => {
             errors.err_span(span, "Descriptions must begin with a lowercase letter");
         }
     }
+}
+
+#[test]
+fn test_initialisms() {
+    use proc_macro2::TokenStream;
+    use quote::ToTokens;
+    use std::panic::Location;
+
+    #[track_caller]
+    fn check(s: &str, should_succeed: bool) {
+        let errors = Errors::default();
+        check_option_description(&errors, s, Span::call_site());
+
+        let description_accepted = {
+            let mut stream = TokenStream::new();
+            errors.to_tokens(&mut stream);
+            stream.is_empty()
+        };
+
+        assert!(
+            description_accepted == should_succeed,
+            "Assertion at {} failed",
+            Location::caller(),
+        );
+    }
+
+    check("Descriptions can't begin with an uppercase letter", false);
+    check("descriptions must begin with a lowercase letter unless it's an initialism", true);
+    check("HTTP is OK", true);
+    check("I2C is OK", true);
+    check("A sentence starting with a single-letter uppercase letter is bad even though it looks like an initialism", false);
+    check("a sentence starting with a lowercase letter is good", true);
+    check("非ラテン文字は常に受け入れられるべきです", true);
+
+    // NOTE: Not so clear what should be done with this one, but I don't think anyone will ever
+    // want to use I as the first word of a description anyway
+    check(
+        "I don't think 'I' should be accepted even though it's always grammatically expected to be
+uppercase, like an initialism",
+        false,
+    );
 }
 
 fn parse_attr_single_string(
@@ -528,43 +540,73 @@ fn parse_attr_single_string(
 ) {
     if let Some(first) = slot {
         errors.duplicate_attrs(name, first, m);
-    } else if let Some(lit_str) = errors.expect_lit_str(&m.lit) {
+    } else if let Some(lit_str) = errors.expect_lit_str(&m.value) {
         *slot = Some(lit_str.clone());
     }
 }
 
 fn parse_attr_multi_string(errors: &Errors, m: &syn::MetaNameValue, list: &mut Vec<syn::LitStr>) {
-    if let Some(lit_str) = errors.expect_lit_str(&m.lit) {
+    if let Some(lit_str) = errors.expect_lit_str(&m.value) {
         list.push(lit_str.clone());
     }
 }
 
 fn parse_attr_doc(errors: &Errors, attr: &syn::Attribute, slot: &mut Option<Description>) {
-    let nv = if let Some(nv) = attr_to_meta_name_value(errors, attr) {
+    let nv = if let Some(nv) = errors.expect_meta_name_value(&attr.meta) {
         nv
     } else {
         return;
     };
 
-    // Don't replace an existing description.
+    // Don't replace an existing explicit description.
     if slot.as_ref().map(|d| d.explicit).unwrap_or(false) {
         return;
     }
 
-    if let Some(lit_str) = errors.expect_lit_str(&nv.lit) {
+    if let Some(lit_str) = errors.expect_lit_str(&nv.value) {
         let lit_str = if let Some(previous) = slot {
             let previous = &previous.content;
             let previous_span = previous.span();
-            syn::LitStr::new(&(previous.value() + &*lit_str.value()), previous_span)
+            syn::LitStr::new(&(previous.value() + &unescape_doc(lit_str.value())), previous_span)
         } else {
-            lit_str.clone()
+            syn::LitStr::new(&unescape_doc(lit_str.value()), lit_str.span())
         };
         *slot = Some(Description { explicit: false, content: lit_str });
     }
 }
 
+/// Replaces escape sequences in doc-comments with the characters they represent.
+///
+/// Rustdoc understands CommonMark escape sequences consisting of a backslash followed by an ASCII
+/// punctuation character. Any other backslash is treated as a literal backslash.
+fn unescape_doc(s: String) -> String {
+    let mut result = String::with_capacity(s.len());
+
+    let mut characters = s.chars().peekable();
+    while let Some(mut character) = characters.next() {
+        if character == '\\' {
+            if let Some(next_character) = characters.peek() {
+                if next_character.is_ascii_punctuation() {
+                    character = *next_character;
+                    characters.next();
+                }
+            }
+        }
+
+        // Braces must be escaped as this string will be used as a format string
+        if character == '{' || character == '}' {
+            result.push(character);
+        }
+
+        result.push(character);
+    }
+
+    result
+}
+
 fn parse_attr_description(errors: &Errors, m: &syn::MetaNameValue, slot: &mut Option<Description>) {
-    let lit_str = if let Some(lit_str) = errors.expect_lit_str(&m.lit) { lit_str } else { return };
+    let lit_str =
+        if let Some(lit_str) = errors.expect_lit_str(&m.value) { lit_str } else { return };
 
     // Don't allow multiple explicit (non doc-comment) descriptions
     if let Some(description) = slot {

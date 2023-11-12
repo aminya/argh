@@ -319,10 +319,29 @@
 
 use std::str::FromStr;
 
-pub use argh_derive::FromArgs;
+pub use argh_derive::{ArgsInfo, FromArgs};
 
 /// Information about a particular command used for output.
 pub type CommandInfo = argh_shared::CommandInfo<'static>;
+
+/// Information about the command including the options and arguments.
+pub type CommandInfoWithArgs = argh_shared::CommandInfoWithArgs<'static>;
+
+/// Information about a subcommand.
+pub type SubCommandInfo = argh_shared::SubCommandInfo<'static>;
+
+pub use argh_shared::{ErrorCodeInfo, FlagInfo, FlagInfoKind, Optionality, PositionalInfo};
+
+/// Structured information about the command line arguments.
+pub trait ArgsInfo {
+    /// Returns the argument info.
+    fn get_args_info() -> CommandInfoWithArgs;
+
+    /// Returns the list of subcommands
+    fn get_subcommands() -> Vec<SubCommandInfo> {
+        Self::get_args_info().commands
+    }
+}
 
 /// Types which can be constructed from a set of commandline arguments.
 pub trait FromArgs: Sized {
@@ -670,7 +689,19 @@ fn cmd<'a>(default: &'a str, path: &'a str) -> &'a str {
 /// was unsuccessful or if information like `--help` was requested. Error messages will be printed
 /// to stderr, and `--help` output to stdout.
 pub fn from_env<T: TopLevelCommand>() -> T {
-    let strings: Vec<String> = std::env::args().collect();
+    let strings: Vec<String> = std::env::args_os()
+        .map(|s| s.into_string())
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|arg| {
+            eprintln!("Invalid utf8: {}", arg.to_string_lossy());
+            std::process::exit(1)
+        });
+
+    if strings.is_empty() {
+        eprintln!("No program name, argv is empty");
+        std::process::exit(1)
+    }
+
     let cmd = cmd(&strings[0], &strings[0]);
     let strs: Vec<&str> = strings.iter().map(|s| s.as_str()).collect();
     T::from_args(&[cmd], &strs[1..]).unwrap_or_else(|early_exit| {
@@ -690,7 +721,7 @@ pub fn from_env<T: TopLevelCommand>() -> T {
 /// Create a `FromArgs` type from the current process's `env::args`.
 ///
 /// This special cases usages where argh is being used in an environment where cargo is
-/// driving the build. We skip the second env variable.
+/// driving the build. We skip the second env argument.
 ///
 /// This function will exit early from the current process if argument parsing
 /// was unsuccessful or if information like `--help` was requested. Error messages will be printed
@@ -803,6 +834,14 @@ impl<T> ParseValueSlot for ParseValueSlotTy<Vec<T>, T> {
     }
 }
 
+// `ParseValueSlotTy<Option<Vec<T>>, T>` is used as the slot for optional repeating arguments.
+impl<T> ParseValueSlot for ParseValueSlotTy<Option<Vec<T>>, T> {
+    fn fill_slot(&mut self, arg: &str, value: &str) -> Result<(), String> {
+        self.slot.get_or_insert_with(Vec::new).push((self.parse_func)(arg, value)?);
+        Ok(())
+    }
+}
+
 /// A type which can be the receiver of a `Flag`.
 pub trait Flag {
     /// Creates a default instance of the flag value;
@@ -820,6 +859,16 @@ impl Flag for bool {
     }
     fn set_flag(&mut self) {
         *self = true;
+    }
+}
+
+impl Flag for Option<bool> {
+    fn default() -> Self {
+        None
+    }
+
+    fn set_flag(&mut self) {
+        *self = Some(true);
     }
 }
 

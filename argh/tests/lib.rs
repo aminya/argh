@@ -105,6 +105,48 @@ Options:
 }
 
 #[test]
+fn nested_from_str_example() {
+    #[derive(FromArgs)]
+    /// Goofy thing.
+    struct FiveStruct {
+        /// always five
+        #[argh(option, from_str_fn(nested::always_five))]
+        five: usize,
+    }
+
+    pub mod nested {
+        pub fn always_five(_value: &str) -> Result<usize, String> {
+            Ok(5)
+        }
+    }
+
+    let f = FiveStruct::from_args(&["cmdname"], &["--five", "woot"]).expect("failed to five");
+    assert_eq!(f.five, 5);
+}
+
+#[test]
+fn method_from_str_example() {
+    #[derive(FromArgs)]
+    /// Goofy thing.
+    struct FiveStruct {
+        /// always five
+        #[argh(option, from_str_fn(AlwaysFive::<usize>::always_five))]
+        five: usize,
+    }
+
+    struct AlwaysFive<T>(T);
+
+    impl AlwaysFive<usize> {
+        fn always_five(_value: &str) -> Result<usize, String> {
+            Ok(5)
+        }
+    }
+
+    let f = FiveStruct::from_args(&["cmdname"], &["--five", "woot"]).expect("failed to five");
+    assert_eq!(f.five, 5);
+}
+
+#[test]
 fn subcommand_example() {
     #[derive(FromArgs, PartialEq, Debug)]
     /// Top-level command.
@@ -280,6 +322,30 @@ Options:
   --s               a switch with a description that is spread across a number
                     of lines of comments.
   --help, help      display usage information
+"###,
+    );
+}
+
+#[test]
+fn escaped_doc_comment_description() {
+    #[derive(FromArgs)]
+    /// A \description\:
+    /// \!\"\#\$\%\&\'\(\)\*\+\,\-\.\/\:\;\<\=\>\?\@\[\\\]\^\_\`\{\|\}\~\
+    struct Cmd {
+        #[argh(switch)]
+        /// a \description\:
+        /// \!\"\#\$\%\&\'\(\)\*\+\,\-\.\/\:\;\<\=\>\?\@\[\\\]\^\_\`\{\|\}\~\
+        _s: bool,
+    }
+
+    assert_help_string::<Cmd>(
+        r###"Usage: test_arg_0 [--s]
+
+A \description: !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~\
+
+Options:
+  --s               a \description: !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~\
+  --help            display usage information
 "###,
     );
 }
@@ -724,6 +790,26 @@ Required options not provided:
                 b: Subcommand { a: "b".into(), b: vec!["c".into()] },
                 c: vec!["2".into(), "3".into()],
             },
+        );
+    }
+
+    #[derive(FromArgs, Debug, PartialEq)]
+    /// Woot
+    struct Underscores {
+        #[argh(positional)]
+        /// fooey
+        a_: String,
+    }
+
+    #[test]
+    fn positional_name_with_underscores() {
+        assert_output(&["first"], Underscores { a_: "first".into() });
+
+        assert_error::<Underscores>(
+            &[],
+            r###"Required positional arguments not provided:
+    a
+"###,
         );
     }
 }
@@ -1214,12 +1300,12 @@ Options:
         }
 
         assert_help_string::<Cmd>(
-            r###"Usage: test_arg_0 <_two>
+            r###"Usage: test_arg_0 <two>
 
 Short description
 
 Positional Arguments:
-  _two              this one is real
+  two               this one is real
 
 Options:
   --help, help      display usage information
